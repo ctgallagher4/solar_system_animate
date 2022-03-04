@@ -1,20 +1,27 @@
 from astropy.coordinates import SkyCoord
 import csv
 from os import path
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import astropy.units as u 
 import astropy.constants as c
-import sys
-import numpy as np
 import matplotlib.animation as manimation
-import time
 from tqdm import tqdm
 import mpl_toolkits.mplot3d.axes3d as p3
+from ctypes import c_double, c_int, CDLL
+
+library_path = path.join(sys.path[0], 'gravity_evaluator.so')
+try:
+    gravity_evaluator = CDLL(library_path)
+except:
+    exit("Gravity evaluator module not found.")  
+grav_eval = gravity_evaluator.gravity_evaluator
+grav_eval.restype = None
+
 #Sources: https://prappleizer.github.io/Tutorials/RK4/RK4_Tutorial.html
 
-class Body:
-    
+class Body:    
     def __init__(self, pos_vec, vel_vec, mass, name):
         self.pos = pos_vec.cgs.value
         self.vel = vel_vec.cgs.value
@@ -55,42 +62,24 @@ class System:
         self.system_state_vector = np.concatenate(state_vectors, dtype=object)
         self.system_mass_vector = np.array([body.return_masses() for body in self.bodies])
 
-    def gravity_evaluator(self, t, y, m):
-        N_bodies = int(len(y) / 6)
-        solved_vector = np.zeros(y.size)
-        for i in range(N_bodies):
-            ioffset = i * 6 
-            for j in range(N_bodies):
-                joffset = j*6
-                solved_vector[ioffset] = y[ioffset+3]
-                solved_vector[ioffset+1] = y[ioffset+4]
-                solved_vector[ioffset+2] = y[ioffset+5]
-                if i != j:
-                    dx = y[ioffset] - y[joffset]
-                    dy = y[ioffset+1] - y[joffset+1]
-                    dz = y[ioffset+2] - y[joffset+2] 
-                    r = (dx**2+dy**2+dz**2)**0.5
-                    ax = (-c.G.cgs * m[j] / r**3) * dx
-                    ay = (-c.G.cgs * m[j] / r**3) * dy
-                    az = (-c.G.cgs * m[j] / r**3) * dz
-                    ax = ax.value
-                    ay = ay.value
-                    az = az.value
-                    solved_vector[ioffset+3] += ax
-                    solved_vector[ioffset+4] += ay
-                    solved_vector[ioffset+5] += az    
-
-        return solved_vector 
+    def evaluator(self, t, y, m):
+        n = len(y)
+        y = list(y)
+        m = list(m)
+        c_arr_in = (c_double * n)(*y)
+        c_arr_in_2 = (c_double * n)(*m)
+        c_arr_out = (c_double * n)()
+        grav_eval(n, c_arr_in, c_arr_in_2, c_arr_out)
+        return np.asarray(list(c_arr_out[:]))
 
     def rk4(self, t, dt):
-        func = self.gravity_evaluator
+        func = self.evaluator
         y = self.system_state_vector
         m = self.system_mass_vector
         k1 = dt * func(t, y, m) 
         k2 = dt * func(t + 0.5*dt, y + 0.5*k1, m)
         k3 = dt * func(t + 0.5*dt, y + 0.5*k2, m)
         k4 = dt * func(t + dt, y + k3, m)
-
         new = y + (1/6.)*(k1+ 2*k2 + 2*k3 + k4)
 
         return new
@@ -120,9 +109,7 @@ class System:
                 transposed[i // 2][0].append(split[i][0])
                 transposed[i // 2][1].append(split[i][1])
                 transposed[i // 2][2].append(split[i][2])
-
         return transposed
-
 
     def plot(self, history, box_length):
         ax = plt.axes(projection='3d')
@@ -139,7 +126,7 @@ class System:
         plt.show()
         plt.clf()
 
-    def save_video(self, history, box_length, video_name, rotate=0, fixed='no'):
+    def save_video(self, history, box_length, video_name, rotate=0, fixed='no', frame_skip=1):
         fig = plt.figure()
         ax = plt.axes(projection ='3d')
 
@@ -154,47 +141,25 @@ class System:
         writer = FFMpegWriter(fps=15, metadata=metadata)
         with writer.saving(fig, f"{video_name}.mp4", 100):
             print("Creating Video:")
-            for frame_num in tqdm(range(len(self.past))):
+            for frame_num in tqdm(range(0, len(self.past), frame_skip)):
                 for i, body in enumerate(history):
                     ax.plot3D(body[0][:frame_num], body[1][:frame_num], body[2][:frame_num])
                     ax.scatter(body[0][frame_num], body[1][frame_num], body[2][frame_num])
                     ax.text3D(body[0][:frame_num+1][-1], 
-                              body[1][:frame_num+1][-1], 
-                              body[2][:frame_num+1][-1], 
-                              labels[i], 
-                              color='black',
-                              size = 15)
+                            body[1][:frame_num+1][-1], 
+                            body[2][:frame_num+1][-1], 
+                            labels[i], 
+                            color='black',
+                            size = 15)
                     if fixed == 'yes':
                         ax.set_xlim(-1*box_length, box_length)
                         ax.set_ylim(-1*box_length, box_length)
                         ax.set_zlim(-1*box_length, box_length)
-                    ax.set_xlabel('Centimeters')
-                    ax.set_ylabel('Centimeters')
-                    ax.set_zlabel('Centimeters')
-                    if rotate == 'right':
-                        coeff = -1
-                    if rotate == 'none':
-                        coeff = 0
-                    if rotate == 'left':
-                        coeff = 1
-                    ax.view_init(20, coeff*frame_num/3)
-                day = round(frame_num * self.time_step.unit.to('yr'), 2)
-                ax.set_title(f'{day} years')
+                        ax.set_xlabel('Centimeters')
+                        ax.set_ylabel('Centimeters')
+                        ax.set_zlabel('Centimeters')
+                ax.view_init(20, rotate*frame_num* 1/frame_skip)
+                time = round(frame_num * self.time_step.unit.to('yr'), 2)
+                ax.set_title(f'{time} years')
                 writer.grab_frame()
                 plt.cla()
-
-    # def make_slider(self, history):
-    #     fig = plt.figure()
-    #     ax = plt.axes(projection='3d')
-    #     for i in history:
-        
-    #         graphs = [ax.plot3D([], [], []) for i in range(len(history))]
-
-    #     def animate(i):
-    #         for k in range(len(graphs)):
-    #             graphs[k].set_data(history[k][0][:i+1], history[k][1][:i+1], history[k][2][:i+1])
-        
-    #     ani = FuncAnimation(fig, animate, frames=10, interval=200)
-    #     plt.show()
-
-        

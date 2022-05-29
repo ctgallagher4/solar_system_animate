@@ -22,8 +22,14 @@
 
 Finally, I will structure all of these files in a good way and clean things up.
 
-
-
+# To run the program:
+1) clone the repository
+2) edit sample_simulation.py or make your own
+3) choose the csv of your choice or edit the currrent csv
+4) run sample_simulation.py or your own simulation
+5) wait for a confirmation plot to load
+6) click X and wait for the video to render
+7) navigate to the name of the video in sample_simulation.py
 
 
 
